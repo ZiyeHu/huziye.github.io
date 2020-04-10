@@ -52,7 +52,7 @@ flags.DEFINE_integer('training_set_size', 750, 'size of the training set, 1500 f
 flags.DEFINE_integer('val_set_size', 150, 'size of the training set, 150 for sim_reach and 76 for sim push')
 
 ## Training options
-flags.DEFINE_integer('metatrain_iterations', 300,'number of metatraining iterations.')  # 30k for pushing, 50k for reaching and placing
+flags.DEFINE_integer('metatrain_iterations', 30000,'number of metatraining iterations.')  # 30k for pushing, 50k for reaching and placing
 flags.DEFINE_integer('meta_batch_size', 25,'number of tasks sampled per meta-update')  # 25 for reaching, 15 for pushing, 12 for placing
 flags.DEFINE_float('meta_lr', 1e-3, 'the base learning rate of the generator')
 flags.DEFINE_integer('update_batch_size', 1,
@@ -79,6 +79,7 @@ flags.DEFINE_integer('final_eept_min', 6, 'first index of the final eept in the 
 flags.DEFINE_integer('final_eept_max', 8, 'last index of the final eept in the action array')
 flags.DEFINE_float('final_eept_loss_eps', 0.1, 'the coefficient of the auxiliary loss')
 flags.DEFINE_float('act_loss_eps', 1.0, 'the coefficient of the action loss')
+
 flags.DEFINE_float('loss_multiplier', 100.0,
                    'the constant multiplied with the loss value, 100 for reach and 50 for push')
 flags.DEFINE_bool('use_l1_l2_loss', False, 'use a loss with combination of l1 and l2')
@@ -130,7 +131,7 @@ flags.DEFINE_bool('learn_bicycle', False, 'learning strategy')
 flags.DEFINE_bool('compare_learn', True, 'learning strategy')
 flags.DEFINE_integer('begin_restore_iter', 29100, 'iteration to load model (-1 for latest model)')
 flags.DEFINE_integer('end_restore_iter', 29999, 'iteration to load model (-1 for latest model)')
-flags.DEFINE_integer('gradients_num', 5, 'number of gradient update during training')
+
 
 
 
@@ -707,7 +708,7 @@ def main():
         with tf.variable_scope('model', reuse=tf.AUTO_REUSE) as training_scope:
             weights, conv_out_size = construct_weights(data_generator._dU, img_idx, state_idx, FLAGS.norm,network_config)
             if FLAGS.compare_learn:
-                with tf.variable_scope('compare_learn_model', reuse=tf.AUTO_REUSE) as compare_scope:
+                with tf.variable_scope('compare_learn_model', reuse=False) as compare_scope:
                     compare_learn_weights, conv_out_size = construct_weights(data_generator._dU, img_idx, state_idx, FLAGS.norm,network_config)
             print('conv_out_size', conv_out_size)
             print('weights', weights)
@@ -766,8 +767,6 @@ def main():
                 inputbs = [inputb] * num_updates
 
                 # if FLAGS.zero_state:
-                #     state_inputa = tf.zeros_like(state_inputa)
-                #     compare_state_input = tf.zeros_like(compare_state_input)
 
                 state_inputas = [state_inputa] * num_updates
                 if FLAGS.no_state:
@@ -775,6 +774,8 @@ def main():
                     compare_state_input = None
 
                 if FLAGS.learn_final_eept:
+                #     state_inputa = tf.zeros_like(state_inputa)
+                #     compare_state_input = tf.zeros_like(compare_state_input)
                     final_eeptas = [final_eepta] * num_updates
 
                 # Pre-update
@@ -790,15 +791,40 @@ def main():
                 if FLAGS.learn_final_eept:
                     local_lossa += final_eept_loss_eps * final_eept_lossa
 
-                # if FLAGS.compare_learn:
-                #     # compare_learn Pre-update
-                #     if 'Training' in prefix:
-                #         compare_learn_local_outputa, compare_learn_final_eept_preda = forward(conv_out_size, inputb, state_inputb, compare_learn_weights,meta_testing=True,network_config=network_config)
-                #     else:
-                #         compare_learn_local_outputa, compare_learn_final_eept_preda = forward(conv_out_size, inputb, state_inputb, compare_learn_weights,meta_testing=True,is_training=False, network_config=network_config)
-                #
-                #     compare_learn_local_lossa = act_loss_eps * euclidean_loss_layer(compare_learn_local_outputa, tf.zeros_like(compare_learn_local_outputa) ,multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                if FLAGS.compare_learn:
+                    # compare_learn Pre-update
+                    if 'Training' in prefix:
+                        compare_learn_local_outputa, compare_learn_final_eept_preda = forward(conv_out_size, inputa, tf.zeros_like(state_inputa), compare_learn_weights, network_config=network_config)
+                    else:
+                        compare_learn_local_outputa, compare_learn_final_eept_preda = forward(conv_out_size, inputa, tf.zeros_like(state_inputa), compare_learn_weights, is_training=False, network_config=network_config)
 
+                    compare_learn_local_lossa = act_loss_eps * euclidean_loss_layer(compare_learn_local_outputa, tf.zeros_like(compare_learn_local_outputa) ,multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                    # Compute fast gradients
+                    grads = tf.gradients(compare_learn_local_lossa, compare_learn_weights.values())
+                    # print('grads',grads)
+                    gradients = dict(zip(compare_learn_weights.keys(), grads))
+                    # print('gradients',gradients)
+                    # make fast gradient zero for weights with gradient None
+                    for key in gradients.keys():
+                        if gradients[key] is None:
+                            gradients[key] = tf.zeros_like(compare_learn_weights[key])
+                    if FLAGS.stop_grad:
+                        gradients = {key: tf.stop_gradient(gradients[key]) for key in gradients.keys()}
+                    if FLAGS.clip:
+                        clip_min = FLAGS.clip_min
+                        clip_max = FLAGS.clip_max
+                        for key in gradients.keys():
+                            gradients[key] = tf.clip_by_value(gradients[key], clip_min, clip_max)
+                    if FLAGS.pretrain_weight_path != 'N/A':
+                        gradients['wc1'] = tf.zeros_like(gradients['wc1'])
+                        gradients['bc1'] = tf.zeros_like(gradients['bc1'])
+                    # gradients_summ.append([gradients[key] for key in sorted_weight_keys])
+                    compare_learn_fast_weights = dict(zip(compare_learn_weights.keys(), [compare_learn_weights[key] - step_size * gradients[key] for key in compare_learn_weights.keys()]))
+
+                    if 'Training' in prefix:
+                        compare_learn_outputb, _ = forward(conv_out_size, compare_input, compare_state_input, compare_learn_fast_weights, meta_testing=True, network_config=network_config)
+                    else:
+                        compare_learn_outputb, _ = forward(conv_out_size, compare_input, compare_state_input, compare_learn_fast_weights, meta_testing=True, is_training=False, testing=testing, network_config=network_config)
 
                 # Compute fast gradients
                 grads = tf.gradients(local_lossa, weights.values())
@@ -822,118 +848,39 @@ def main():
                 # gradients_summ.append([gradients[key] for key in sorted_weight_keys])
                 fast_weights = dict(zip(weights.keys(), [weights[key] - step_size * gradients[key] for key in weights.keys()]))
 
-                for gradients_num in range(1,FLAGS.gradients_num):
-                    grads = tf.gradients(local_lossa, gradients.values())
-                    # print('grads', grads)
-                    gradients = dict(zip(weights.keys(), grads))
-                    # make fast gradient zero for weights with gradient None
-                    for key in gradients.keys():
-                        if gradients[key] is None:
-                            gradients[key] = tf.zeros_like(weights[key])
-                    if FLAGS.stop_grad:
-                        gradients = {key: tf.stop_gradient(gradients[key]) for key in gradients.keys()}
-                    if FLAGS.clip:
-                        clip_min = FLAGS.clip_min
-                        clip_max = FLAGS.clip_max
-                        for key in gradients.keys():
-                            gradients[key] = tf.clip_by_value(gradients[key], clip_min, clip_max)
-                    if FLAGS.pretrain_weight_path != 'N/A':
-                        gradients['wc1'] = tf.zeros_like(gradients['wc1'])
-                        gradients['bc1'] = tf.zeros_like(gradients['bc1'])
-                    # gradients_summ.append([gradients[key] for key in sorted_weight_keys])
-                    gradients_step_size=step_size/math.factorial(gradients_num+1)
-                    print('gradients_num',gradients_num,'gradients_step_size',gradients_step_size)
-                    fast_weights = dict(zip(fast_weights.keys(), [fast_weights[key] - gradients_step_size *  gradients[key] for key in fast_weights.keys()]))
-
-
-                # # Post-update
-                # if FLAGS.no_state:
-                #     state_inputb = None
-                # if 'Training' in prefix:
-                #     # outputb, final_eept_predb = forward(conv_out_size, inputb, tf.zeros_like(state_inputb), fast_weights,meta_testing=True, network_config=network_config)
-                #     outputb, final_eept_predb = forward(conv_out_size, inputa, tf.zeros_like(state_inputa),fast_weights, network_config=network_config)
-                #
-                # else:
-                #     # outputb, final_eept_predb = forward(conv_out_size, inputb, tf.zeros_like(state_inputb), fast_weights,meta_testing=True, is_training=False, testing=testing,network_config=network_config)
-                #     outputb, final_eept_predb = forward(conv_out_size, inputa, tf.zeros_like(state_inputa),fast_weights, is_training=False,testing=testing, network_config=network_config)
-
                 # Post-update
                 if 'Training' in prefix:
                     outputb, final_eept_predb  = forward(conv_out_size, compare_input, compare_state_input, fast_weights,meta_testing=True, network_config=network_config)
-                    # right_lossb = act_loss_eps * euclidean_loss_layer(compare_learn_outputb, compare_action,
-                    #                                                   multiplier=loss_multiplier,
-                    #                                                   use_l1=FLAGS.use_l1_l2_loss)
-
-
                 else:
                     outputb, final_eept_predb  = forward(conv_out_size, compare_input, compare_state_input, fast_weights,meta_testing=True, is_training=False, testing=testing,network_config=network_config)
-                    # right_lossb = act_loss_eps * euclidean_loss_layer(compare_learn_outputb, compare_action,
-                    #                                                   multiplier=loss_multiplier,
-                    #                                                   use_l1=FLAGS.use_l1_l2_loss)
 
 
 
 
-                right_lossb = left_lossb = act_loss_eps * euclidean_loss_layer(outputb, tf.zeros_like(outputb), multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                # left_lossb = act_loss_eps * euclidean_loss_layer(outputb, compare_action, multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                # right_lossb = act_loss_eps * euclidean_loss_layer(compare_learn_outputb, -compare_action, multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                # sum_loss =  act_loss_eps * euclidean_loss_layer(outputb + compare_learn_outputb, tf.zeros_like(compare_action), multiplier=loss_multiplier, use_l1=FLAGS.use_l1_l2_loss)
+
+                left_lossb =  euclidean_loss_layer(outputb, compare_action, multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                right_lossb =  euclidean_loss_layer(compare_learn_outputb, -compare_action, multiplier=loss_multiplier, use_l1=FLAGS.use_l1_l2_loss)
+                sum_loss =  euclidean_loss_layer(outputb + compare_learn_outputb, tf.zeros_like(compare_action), multiplier=loss_multiplier, use_l1=FLAGS.use_l1_l2_loss)
 
 
-                # if FLAGS.compare_learn:
-                #
-                #     with tf.variable_scope('select_model', reuse=tf.AUTO_REUSE) as select_scope:
-                #
-                #         # Pre-update
-                #         if 'Training' in prefix:
-                #             local_outputa, final_eept_preda = forward(conv_out_size, inputa,tf.zeros_like(state_inputa), fast_weights,network_config=network_config)
-                #         else:
-                #             local_outputa, final_eept_preda = forward(conv_out_size, inputa,tf.zeros_like(state_inputa), fast_weights,is_training=False, network_config=network_config)
-                #         if FLAGS.learn_final_eept:
-                #             final_eept_lossa = euclidean_loss_layer(final_eept_preda, final_eepta,multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
-                #         else:
-                #             final_eept_lossa = tf.constant(0.0)
-                #         local_lossa = act_loss_eps * euclidean_loss_layer(local_outputa, tf.zeros_like(local_outputa),multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
-                #         if FLAGS.learn_final_eept:
-                #             local_lossa += final_eept_loss_eps * final_eept_lossa
-                #
-                #
-                #         grads = tf.gradients(local_lossa, fast_weights.values())
-                #         gradients = dict(zip(fast_weights.keys(), grads))
-                #         # make fast gradient zero for weights with gradient None
-                #         for key in gradients.keys():
-                #             if gradients[key] is None:
-                #                 gradients[key] = tf.zeros_like(fast_weights[key])
-                #         if FLAGS.stop_grad:
-                #             gradients = {key: tf.stop_gradient(gradients[key]) for key in gradients.keys()}
-                #         if FLAGS.clip:
-                #             clip_min = FLAGS.clip_min
-                #             clip_max = FLAGS.clip_max
-                #             for key in gradients.keys():
-                #                 gradients[key] = tf.clip_by_value(gradients[key], clip_min, clip_max)
-                #         if FLAGS.pretrain_weight_path != 'N/A':
-                #             gradients['wc1'] = tf.zeros_like(gradients['wc1'])
-                #             gradients['bc1'] = tf.zeros_like(gradients['bc1'])
-                #         # gradients_summ.append([gradients[key] for key in sorted_weight_keys])
-                #         fast_weights = dict(zip(fast_weights.keys(), [fast_weights[key] - step_size * gradients[key] for key in fast_weights.keys()]))
-                #
-                #         # Post-update
-                #         if 'Training' in prefix:
-                #             compare_learn_outputb, _ = forward(conv_out_size, compare_input, compare_state_input, fast_weights,meta_testing=True, network_config=network_config)
-                #             right_lossb = act_loss_eps * euclidean_loss_layer(compare_learn_outputb, compare_action,multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
-                #
-                #
-                #         else:
-                #             compare_learn_outputb, _ = forward(conv_out_size, compare_input, compare_state_input, fast_weights,meta_testing=True, is_training=False, testing=testing,network_config=network_config)
-                #             right_lossb = act_loss_eps * euclidean_loss_layer(compare_learn_outputb, compare_action,multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
-                #
-                #
-                #         # local_lossb = act_loss_eps * euclidean_loss_layer(outputb, actionb, multiplier=loss_multiplier, use_l1=FLAGS.use_l1_l2_loss)
-                #         # outputb = 0.5*(outputb+compare_learn_outputb)
-                #         outputb=compare_learn_outputb
-                #
-                #
-                #     print('outputb is from multi-learning')
+                # multiply_loss = act_loss_eps * left_lossb + act_loss_eps * right_lossb + 0.001 * act_loss_eps * left_lossb * right_lossb + act_loss_eps * sum_loss
+                multiply_loss = act_loss_eps * left_lossb + act_loss_eps * right_lossb + act_loss_eps * sum_loss
+                local_lossb = act_loss_eps * left_lossb + act_loss_eps * right_lossb
+
+                # local_lossb = act_loss_eps * left_lossb +  act_loss_eps *  sum_loss
+                # local_lossb = act_loss_eps * left_lossb + act_loss_eps * right_lossb +  0.1 * (left_lossb + right_lossb) * sum_loss
+                # local_lossb = act_loss_eps * left_lossb + act_loss_eps * right_lossb + act_loss_eps * left_lossb * sum_loss
 
 
-                local_lossb = act_loss_eps * euclidean_loss_layer(outputb, compare_action, multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
+                # local_lossb = act_loss_eps * euclidean_loss_layer(outputb, compare_action, multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss) + \
+                #                 act_loss_eps * euclidean_loss_layer(compare_learn_outputb, -compare_action, multiplier=loss_multiplier, use_l1=FLAGS.use_l1_l2_loss) + \
+                #                 act_loss_eps * euclidean_loss_layer(outputb + compare_learn_outputb, tf.zeros_like(compare_action), multiplier=loss_multiplier, use_l1=FLAGS.use_l1_l2_loss)
+
+
+
                 local_outputbs.append(outputb)
                 if FLAGS.learn_final_eept:
                     final_eept_lossb = euclidean_loss_layer(final_eept_predb, final_eeptb, multiplier=loss_multiplier,use_l1=FLAGS.use_l1_l2_loss)
@@ -952,7 +899,7 @@ def main():
 
 
                 local_fn_output = [local_outputa, local_outputbs, local_outputbs[-1], local_lossa, local_lossesb,
-                                   final_eept_lossesb, flat_img_inputb,left_lossb,right_lossb]
+                                   final_eept_lossesb, flat_img_inputb,left_lossb,right_lossb,multiply_loss]
                 return local_fn_output
 
 
@@ -964,15 +911,16 @@ def main():
         #              [tf.float32] * FLAGS.num_updates, tf.float32,
         #              [[tf.float32] * len(weights.keys())] * FLAGS.num_updates]
         out_dtype = [tf.float32, [tf.float32] * FLAGS.num_updates, tf.float32, tf.float32,[tf.float32] * FLAGS.num_updates,
-                     [tf.float32] * FLAGS.num_updates, tf.float32,tf.float32,tf.float32]
+                     [tf.float32] * FLAGS.num_updates, tf.float32,tf.float32,tf.float32,tf.float32]
         result = tf.map_fn(batch_metalearn, elems=(global_inputa, global_inputb,global_compare_input, global_actiona, global_actionb,global_compare_action), dtype=out_dtype)
 
         # outputas, outputbs, test_output, lossesa, lossesb, final_eept_lossesb, flat_img_inputb, gradients = result
-        outputas, outputbs, test_output, lossesa, lossesb, final_eept_lossesb, flat_img_inputb,left_lossb,right_lossb = result
+        outputas, outputbs, test_output, lossesa, lossesb, final_eept_lossesb, flat_img_inputb,left_lossb,right_lossb, multiply_lossb = result
         # trainable_vars = tf.trainable_variables()
         total_loss1 = tf.reduce_sum(lossesa) / tf.to_float(FLAGS.meta_batch_size)
         total_left_lossb = tf.reduce_sum(left_lossb) / tf.to_float(FLAGS.meta_batch_size)
         total_right_lossb = tf.reduce_sum(right_lossb) / tf.to_float(FLAGS.meta_batch_size)
+        total_multiply_lossb = tf.reduce_sum(multiply_lossb) / tf.to_float(FLAGS.meta_batch_size)
 
         total_losses2 = [tf.reduce_sum(lossesb[j]) / tf.to_float(FLAGS.meta_batch_size) for j in range(FLAGS.num_updates)]
         total_final_eept_losses2 = [tf.reduce_sum(final_eept_lossesb[j]) / tf.to_float(FLAGS.meta_batch_size) for j in range(FLAGS.num_updates)]
@@ -980,6 +928,8 @@ def main():
         select_scope = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='select_model')
         train_left_op = tf.train.AdamOptimizer(FLAGS.meta_lr).minimize(total_left_lossb)
         train_right_op = tf.train.AdamOptimizer(FLAGS.meta_lr).minimize(total_right_lossb)
+        train_multiply_op = tf.train.AdamOptimizer(FLAGS.meta_lr).minimize(total_multiply_lossb)
+        mix_train_op = tf.group(train_left_op,train_right_op)
         # self_learn_train_op = tf.train.AdamOptimizer(1e-6).minimize(total_right_lossb)
         # train_op = tf.train.AdamOptimizer(FLAGS.meta_lr).minimize(total_losses2[FLAGS.num_updates - 1],var_list=select_scope)
         self_learn_train_op = tf.train.AdamOptimizer(1e-6).minimize(total_losses2[FLAGS.num_updates - 1])
@@ -1023,13 +973,13 @@ def main():
             else:
                 training_range = range(restore_itr + 1, TOTAL_ITERS)
             for itr in training_range:
-                # train_image_datas = data_generator.make_batch_data(network_config, restore_iter=itr)
-                train_image_datas,train_compare_image_datas = data_generator.make_compare_batch_data(network_config, restore_iter=itr)
+                train_image_datas = data_generator.make_batch_data(network_config, restore_iter=itr)
+                # train_image_datas,train_compare_image_datas = data_generator.make_compare_batch_data(network_config, restore_iter=itr)
                 # train_image_datas, train_compare_image_datas = data_generator.make_goal_batch_data(network_config,restore_iter=itr)
                 obsa_input = train_image_datas[:, :FLAGS.update_batch_size * FLAGS.T, :]
                 obsb_input = train_image_datas[:, FLAGS.update_batch_size * FLAGS.T:, :]
-                compare_obsa_input = train_compare_image_datas[:, :FLAGS.update_batch_size * FLAGS.T, :]
-                compare_obsb_input = train_compare_image_datas[:, FLAGS.update_batch_size * FLAGS.T:, :]
+                # compare_obsa_input = train_compare_image_datas[:, :FLAGS.update_batch_size * FLAGS.T, :]
+                # compare_obsb_input = train_compare_image_datas[:, FLAGS.update_batch_size * FLAGS.T:, :]
 
                 state, tgt_mu = data_generator.generate_data_batch(itr)
                 # state, tgt_mu,compare_state, compare_tgt_mu = data_generator.generate_compare_data_batch(itr)
@@ -1043,10 +993,10 @@ def main():
                 # compare_actiona_input = compare_tgt_mu[:, :FLAGS.update_batch_size * FLAGS.T, :]
                 # compare_actionb_input = compare_tgt_mu[:, FLAGS.update_batch_size * FLAGS.T:, :]
 
-                compare_statea_input = statea_input
-                compare_stateb_input = stateb_input
-                compare_actiona_input = actiona_input
-                compare_actionb_input = actionb_input
+                # compare_statea_input = statea_input
+                # compare_stateb_input = stateb_input
+                # compare_actiona_input = actiona_input
+                # compare_actionb_input = actionb_input
 
                 # print('obsa_input',obsa_input.shape)
 
@@ -1059,6 +1009,8 @@ def main():
                 #              global_actiona: actiona_input,
                 #              global_actionb: compare_actiona_input,
                 #              global_compare_action: actionb_input}
+
+
                 feed_dict = {global_obsa: obsa_input,
                              global_obsb: obsa_input,
                              global_compare_obs: obsa_input,
@@ -1068,16 +1020,29 @@ def main():
                              global_actiona: actiona_input,
                              global_actionb: actiona_input,
                              global_compare_action: actiona_input}
-
-
-                input_tensors = [train_op,
-                                 total_losses2]
+                #
+                # feed_dict = {global_obsa: obsa_input,
+                #              global_obsb: obsa_input,
+                #              global_compare_obs: obsb_input,
+                #              global_statea: statea_input,
+                #              global_stateb: statea_input,
+                #              global_compare_state: stateb_input,
+                #              global_actiona: actiona_input,
+                #              global_actionb: actiona_input,
+                #              global_compare_action: actionb_input}
+                if itr%5==0:
+                    # print('training separately-----')
+                    # input_tensors = [mix_train_op, total_losses2, total_left_lossb, total_right_lossb]
+                    print('mirror learning*****************')
+                    input_tensors = [train_multiply_op, total_multiply_lossb, total_left_lossb, total_right_lossb]
+                else:
+                    input_tensors = [train_op, total_losses2, total_left_lossb, total_right_lossb]
                 results = sess.run(input_tensors, feed_dict=feed_dict)
-                print '(Phase 1)Iteration %d:  average right_postloss is %.2f '  % \
-                      (itr, np.mean(results[-1]))
+                # print '(Phase 1)Iteration %d:  %.2f , %.2f, %.2f'  % \
+                #       (itr, np.mean(results[-3]), np.mean(results[-2]), np.mean(results[-1]))
 
                 # with open('logs/sim_reach_temporal_conv/traing_loss.txt', 'a') as f:
-                #     f.write("%d %f \n"%(itr,np.mean(results[-1])))
+                #     f.write("%d %f \n"%(itr,np.mean(results[-2])))
 
                 # feed_dict = {global_obsa: compare_obsa_input,
                 #              global_obsb: obsa_input,
@@ -1102,71 +1067,16 @@ def main():
                              global_actionb: actiona_input,
                              global_compare_action: actionb_input}
                 results2 = sess.run(input_tensors, feed_dict=feed_dict)
-                print '(Phase 2)Iteration %d:  average right_postloss is %.2f' % \
-                      (itr, np.mean(results2[-1]))
+                print '(Phase 2)Iteration %d:  %.2f , %.2f, %.2f' % \
+                      (itr, np.mean(results2[-3]), np.mean(results2[-2]), np.mean(results2[-1]))
+
+
+
+                # print '(Phase 2)Iteration %d:  average right_postloss is %.2f' % \
+                #       (itr, np.mean(results2[-1]))
 
                 with open('logs/sim_reach_temporal_conv/traing_loss.txt', 'a') as f:
-                    f.write("%d %f %f\n"%(itr,np.mean(results[-1]),np.mean(results2[-1])))
-
-
-
-                # input_tensors = [train_op,
-                #                  total_losses2[num_updates - 1]]
-                # results = sess.run(input_tensors, feed_dict=feed_dict)
-                # print '(Phase 3)Iteration %d: total_weighted_lossb is %2f ' % \
-                #       (itr, np.mean(results[-1]))
-
-
-
-
-                # input_tensors = [total_left_lossb,total_right_lossb,total_losses2[num_updates - 1]]
-                # results = sess.run(input_tensors, feed_dict=feed_dict)
-                # print '(Phase 3)Iteration %d: average left_postloss is %.2f, average right_postloss is %.2f, ' \
-                #       'total_weighted_lossb is %2f' % (itr,  np.mean(results[-3]),np.mean(results[-2]), np.mean(results[-1]))
-
-
-
-
-
-                # feed_dict = {global_obsa: compare_obsa_input,
-                #              global_obsb: obsb_input,
-                #              global_compare_obs:compare_obsa_input,
-                #              global_statea: compare_statea_input,
-                #              global_stateb: stateb_input,
-                #              global_compare_state:compare_statea_input,
-                #              global_actiona: compare_actiona_input,
-                #              global_actionb: actionb_input,
-                #              global_compare_action:compare_actiona_input}
-                #
-                # input_tensors = [train_op, total_loss1, total_losses2[num_updates - 1]]
-                # results = sess.run(input_tensors, feed_dict=feed_dict)
-                # print '(Phase 2)Iteration %d: average preloss is %.2f, average postloss is %.2f' % (itr, np.mean(results[-2]), np.mean(results[-1]))
-                #
-                # feed_dict = {global_obsa: obsa_input,
-                #              global_obsb: obsb_input,
-                #              global_compare_obs:obsa_input,
-                #              global_statea: statea_input,
-                #              global_stateb: stateb_input,
-                #              global_compare_state:statea_input,
-                #              global_actiona: actiona_input,
-                #              global_actionb: actionb_input,
-                #              global_compare_action:actiona_input}
-                #
-                # input_tensors = [train_op, total_loss1, total_losses2[num_updates - 1]]
-                # results = sess.run(input_tensors, feed_dict=feed_dict)
-                # print '(Phase 3)Iteration %d: average preloss is %.2f, average postloss is %.2f' % (itr, np.mean(results[-2]), np.mean(results[-1]))
-
-                # if FLAGS.learn_bicycle:
-                #     feed_dict = {global_obsa: obsb_input,
-                #                  global_obsb: obsa_input,
-                #                  global_statea: stateb_input,
-                #                  global_stateb: statea_input,
-                #                  global_actiona: actionb_input,
-                #                  global_actionb: actiona_input}
-                #     input_tensors = [train_op, total_loss1, total_losses2[num_updates - 1]]
-                #     results = sess.run(input_tensors, feed_dict=feed_dict)
-                #     print '(Phase 2)Iteration %d: average preloss is %.2f, average postloss is %.2f' % (
-                #         itr, np.mean(results[-2]), np.mean(results[-1]))
+                    f.write("%d %f %f\n"%(itr,np.mean(results[-2]),np.mean(results2[-2])))
 
 
 
@@ -1458,7 +1368,7 @@ def main():
 
                         # print('selected_demoO',selected_demoO.shape,'record_obs',record_obs.shape,'selected_demoU',selected_demoU.shape,'record_actions',record_actions.shape,
                         #       'selected_demoX',selected_demoX.shape,'record_states',record_states.shape)
-                        if (rl_rewards>-1.5 and rl_rewards>total_reward) or (rl_rewards>-1.0):
+                        if (rl_rewards>-1.0 and rl_rewards>total_reward):
                             feed_dict = {
                                 global_obsa: selected_demoO,
                                 global_statea: selected_demoX.dot(scale) + bias,
@@ -1556,5 +1466,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
