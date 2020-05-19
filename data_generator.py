@@ -311,6 +311,73 @@ class DataGenerator(object):
         # print('make_batch_data', tf.stack(all_images).shape)
         return np.stack(all_images)
 
+    # def make_compare_batch_data(self, network_config, restore_iter=0, train=True):
+    #     TEST_INTERVAL = 500
+    #     batch_image_size = (self.update_batch_size + self.test_batch_size) * self.meta_batch_size
+    #
+    #     if train:
+    #         all_filenames = self.all_training_filenames
+    #         all_compare_filenames = self.all_compare_training_filenames
+    #         # print('self.all_training_filenames',self.all_training_filenames)
+    #         # print('self.all_compare_training_filenames', self.all_compare_training_filenames)
+    #         if restore_iter >= 0:
+    #             all_filenames = all_filenames[batch_image_size * (restore_iter):batch_image_size * (restore_iter + 1)]
+    #             all_compare_filenames = all_compare_filenames[batch_image_size * (restore_iter):batch_image_size * (restore_iter + 1)]
+    #         # print('make_batch_tensor:all_filenames', all_filenames)
+    #         # print('make_batch_tensor:all_compare_filenames', all_compare_filenames)
+    #
+    #
+    #     # print('self.all_training_filenames',self.all_training_filenames)
+    #     # print('make_batch_data: all_filenames',len(all_filenames),all_filenames)
+    #
+    #     im_height = network_config['image_height']
+    #     im_width = network_config['image_width']
+    #     num_channels = network_config['image_channels']
+    #
+    #     inputs=[]
+    #     for i in range(len(all_filenames)):
+    #         # print('all_filenames[i]',all_filenames[i])
+    #         O = np.array(imageio.mimread(all_filenames[i]))[:, :, :, :3]
+    #         O = np.transpose(O, [0, 3, 2, 1])  # transpose to mujoco setting for images
+    #         O = O/ 255.0
+    #         # print('O.shape', O.shape)
+    #         O = np.reshape(O, [self.T, -1])
+    #         inputs.append(O)
+    #     inputs=np.array(inputs)
+    #     # print('inputs.shape',inputs.shape)
+    #     all_images = []
+    #     for i in xrange(self.meta_batch_size):
+    #         image = inputs[i * (self.update_batch_size + self.test_batch_size):(i + 1) * (
+    #                     self.update_batch_size + self.test_batch_size)]
+    #         # print('i',i,'image.shape',image.shape)
+    #         image = np.reshape(image, [(self.update_batch_size + self.test_batch_size) * self.T, -1])
+    #         # print('append', 'image.shape', image.shape)
+    #         all_images.append(image)
+    #
+    #
+    #     compare_inputs=[]
+    #     for i in range(len(all_compare_filenames)):
+    #         # print('all_filenames[i]',all_filenames[i])
+    #         O = np.array(imageio.mimread(all_compare_filenames[i]))[:, :, :, :3]
+    #         O = np.transpose(O, [0, 3, 2, 1])  # transpose to mujoco setting for images
+    #         O = O/ 255.0
+    #         # print('O.shape', O.shape)
+    #         O = np.reshape(O, [self.T, -1])
+    #         compare_inputs.append(O)
+    #     inputs=np.array(compare_inputs)
+    #     # print('inputs.shape',inputs.shape)
+    #     all_compare_images = []
+    #     for i in xrange(self.meta_batch_size):
+    #         image = inputs[i * (self.update_batch_size + self.test_batch_size):(i + 1) * (
+    #                     self.update_batch_size + self.test_batch_size)]
+    #         # print('i',i,'image.shape',image.shape)
+    #         image = np.reshape(image, [(self.update_batch_size + self.test_batch_size) * self.T, -1])
+    #         # print('append', 'image.shape', image.shape)
+    #         all_compare_images.append(image)
+    #
+    #     # print('make_batch_data', tf.stack(all_images).shape)
+    #     return np.stack(all_images),np.stack(all_compare_images)
+
     def make_compare_batch_data(self, network_config, restore_iter=0, train=True):
         TEST_INTERVAL = 500
         batch_image_size = (self.update_batch_size + self.test_batch_size) * self.meta_batch_size
@@ -322,10 +389,10 @@ class DataGenerator(object):
             # print('self.all_compare_training_filenames', self.all_compare_training_filenames)
             if restore_iter >= 0:
                 all_filenames = all_filenames[batch_image_size * (restore_iter):batch_image_size * (restore_iter + 1)]
-                all_compare_filenames = all_compare_filenames[batch_image_size * (restore_iter):batch_image_size * (restore_iter + 1)]
+                all_compare_filenames = all_compare_filenames[
+                                        batch_image_size * (restore_iter):batch_image_size * (restore_iter + 1)]
             # print('make_batch_tensor:all_filenames', all_filenames)
             # print('make_batch_tensor:all_compare_filenames', all_compare_filenames)
-
 
         # print('self.all_training_filenames',self.all_training_filenames)
         # print('make_batch_data: all_filenames',len(all_filenames),all_filenames)
@@ -334,49 +401,64 @@ class DataGenerator(object):
         im_width = network_config['image_width']
         num_channels = network_config['image_channels']
 
-        inputs=[]
+        inputs = []
+        goal_inputs = []
         for i in range(len(all_filenames)):
             # print('all_filenames[i]',all_filenames[i])
             O = np.array(imageio.mimread(all_filenames[i]))[:, :, :, :3]
             O = np.transpose(O, [0, 3, 2, 1])  # transpose to mujoco setting for images
-            O = O/ 255.0
+            O = O / 255.0
             # print('O.shape', O.shape)
+
+            concat_O = np.concatenate([O[0], O[-1]], axis=0)
+            # print('goal_inputs.shape', concat_O.shape)
+            goal_inputs.append(concat_O)
+
             O = np.reshape(O, [self.T, -1])
             inputs.append(O)
-        inputs=np.array(inputs)
+        inputs = np.array(inputs)
+        goal_inputs = np.array(goal_inputs)
         # print('inputs.shape',inputs.shape)
         all_images = []
+        goal_images = []
         for i in xrange(self.meta_batch_size):
             image = inputs[i * (self.update_batch_size + self.test_batch_size):(i + 1) * (
-                        self.update_batch_size + self.test_batch_size)]
+                    self.update_batch_size + self.test_batch_size)]
             # print('i',i,'image.shape',image.shape)
             image = np.reshape(image, [(self.update_batch_size + self.test_batch_size) * self.T, -1])
-            # print('append', 'image.shape', image.shape)
             all_images.append(image)
 
+            image = goal_inputs[i * (self.update_batch_size + self.test_batch_size):(i + 1) * (
+                    self.update_batch_size + self.test_batch_size)]
+            # print('i',i,'image.shape',image.shape)
+            image = np.reshape(image, [(self.update_batch_size + self.test_batch_size), -1])
+            # print('append', 'image.shape', image.shape)
+            goal_images.append(image)
 
-        compare_inputs=[]
+        compare_inputs = []
         for i in range(len(all_compare_filenames)):
             # print('all_filenames[i]',all_filenames[i])
             O = np.array(imageio.mimread(all_compare_filenames[i]))[:, :, :, :3]
             O = np.transpose(O, [0, 3, 2, 1])  # transpose to mujoco setting for images
-            O = O/ 255.0
+            O = O / 255.0
             # print('O.shape', O.shape)
-            O = np.reshape(O, [self.T, -1])
-            compare_inputs.append(O)
-        inputs=np.array(compare_inputs)
-        # print('inputs.shape',inputs.shape)
+            # O = np.reshape(O, [self.T, -1])
+            concat_O = np.concatenate([O[0], O[-1]], axis=0)
+            # print('compare_inputs.shape', concat_O.shape)
+            compare_inputs.append(concat_O)
+        inputs = np.array(compare_inputs)
+        # print('inputs.shape', inputs.shape)
         all_compare_images = []
         for i in xrange(self.meta_batch_size):
             image = inputs[i * (self.update_batch_size + self.test_batch_size):(i + 1) * (
-                        self.update_batch_size + self.test_batch_size)]
-            # print('i',i,'image.shape',image.shape)
-            image = np.reshape(image, [(self.update_batch_size + self.test_batch_size) * self.T, -1])
+                    self.update_batch_size + self.test_batch_size)]
+            # print('i', i, 'image.shape', image.shape)
+            image = np.reshape(image, [(self.update_batch_size + self.test_batch_size), -1])
             # print('append', 'image.shape', image.shape)
             all_compare_images.append(image)
 
         # print('make_batch_data', tf.stack(all_images).shape)
-        return np.stack(all_images),np.stack(all_compare_images)
+        return np.stack(all_images), np.stack(all_compare_images), np.stack(goal_images)
 
 
 
