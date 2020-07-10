@@ -1,6 +1,0 @@
-1.outer net
-scp -P 5404 -r zyhu@fudanci.com:/data/zyhu/smil/logs/sim_push/sim_push.xavier_init.4_conv.4_strides.16_filters.3_fc.200_dim.bt_dim_20.mbs_20.ubs_1.numstep_1.updatelr_0.01.clip_10.fp.no_action.zero_state.two_heads.1d_conv_act_3_32_10x1_filters.750_trials /home/hzy/origin_mil/logs/sim_pus
-
-2.intranet
-
-scp -r zyhu@10.192.2.203:/data/zyhu/smil/logs/sim_push/sim_push.xavier_init.4_conv.4_strides.16_filters.3_fc.200_dim.bt_dim_20.mbs_20.ubs_1.numstep_1.updatelr_0.01.clip_10.fp.no_action.zero_state.two_heads.1d_conv_act_3_32_10x1_filters.750_trials /home/hzy/origin_mil/logs/sim_pus
