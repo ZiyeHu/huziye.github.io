@@ -105,13 +105,13 @@ flags.DEFINE_bool('log', True, 'if false, do not log summaries, for debugging co
 # flags.DEFINE_string('log_dirs', 'logs/sim_reach_temporal_conv_with_bicycle', 'directory for summaries and checkpoints.')
 flags.DEFINE_string('log_dirs', 'logs/sim_push', 'directory for summaries and checkpoints.')
 flags.DEFINE_bool('resume', False, 'resume training if there is a model available')
-flags.DEFINE_bool('train',True , 'True to train, False to test.')
+flags.DEFINE_bool('train', True, 'True to train, False to test.')
 flags.DEFINE_integer('restore_iter', 0, 'iteration to load model (-1 for latest model)')
 flags.DEFINE_integer('train_update_batch_size', -1, 'number of examples used for gradient update during training \
                     (use if you want to test with a different number).')
 flags.DEFINE_integer('test_update_batch_size', 1, 'number of demos used during test time')
 flags.DEFINE_float('gpu_memory_fraction', 0.9, 'fraction of memory used in gpu')
-flags.DEFINE_bool('record_gifs', True, 'record gifs during evaluation')
+flags.DEFINE_bool('record_gifs', False, 'record gifs during evaluation')
 flags.DEFINE_bool('rl_update_batch_size', 1, 'number of demos used during rl time')
 flags.DEFINE_bool('learn_bicycle', False, 'learning strategy')
 flags.DEFINE_bool('compare_learn', False, 'learning strategy')
@@ -230,6 +230,7 @@ def main():
     graph = tf.Graph()
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=FLAGS.gpu_memory_fraction)
     tf_config = tf.ConfigProto(gpu_options=gpu_options)
+    tf_config.gpu_options.allow_growth = True
     sess = tf.Session(graph=graph, config=tf_config)
     network_config = {
         'num_filters': [FLAGS.num_filters]*FLAGS.num_conv_layers,
@@ -304,26 +305,69 @@ def main():
         sess.run(init_op, feed_dict=None)
         # Start queue runners (used for loading videos on the fly)
         tf.train.start_queue_runners(sess=sess)
-    if FLAGS.resume:
-        model_file = tf.train.latest_checkpoint(log_dir)
-        if FLAGS.restore_iter > 0:
-            model_file = model_file[:model_file.index('model')] + 'model_' + str(FLAGS.restore_iter)
-        if model_file:
-            ind1 = model_file.index('model')
-            resume_itr = int(model_file[ind1+6:])
-            print("Restoring model weights from " + model_file)
-            with graph.as_default():
+
+    if not FLAGS.train:
+      model_file = tf.train.latest_checkpoint(log_dir)
+      if (FLAGS.begin_restore_iter != FLAGS.end_restore_iter):
+        iter_index = FLAGS.begin_restore_iter
+        while iter_index <= FLAGS.end_restore_iter:
+            print('iter_index', iter_index)
+            if FLAGS.restore_iter >= 0:
+                model_file = model_file[:model_file.index('model')] + 'model_' + str(iter_index)
+            if model_file:
+                ind1 = model_file.index('model')
+                resume_itr = int(model_file[ind1 + 6:])
+                print("Restoring model weights from " + model_file)
+                # saver = tf.train.Saver()
                 saver.restore(sess, model_file)
-    if FLAGS.train:
-        train(graph, model, saver, sess, data_generator, log_dir, restore_itr=FLAGS.restore_iter)
-    else:
-        if 'reach' in FLAGS.experiment:
-            generate_test_demos(data_generator)
-            evaluate_vision_reach(env, graph, model, data_generator, sess, exp_string, FLAGS.record_gifs, log_dir)
-        elif 'push' in FLAGS.experiment:
-            evaluate_push(sess, graph, model, data_generator, exp_string, log_dir, FLAGS.demo_file + '/', save_video=FLAGS.record_gifs)
-        else:
-            raise NotImplementedError
+            if 'reach' in FLAGS.experiment:
+                env = gym.make('ReacherMILTest-v1')
+                env.reset()
+                generate_test_demos(data_generator)
+                evaluate_vision_reach(env, graph, data_generator, sess, exp_string, FLAGS.record_gifs, log_dir)
+                # evaluate_rl_vision_reach(graph, data_generator, sess, exp_string, FLAGS.record_gifs, log_dirs)
+            elif 'push' in FLAGS.experiment:
+                evaluate_push(sess, graph, model, data_generator, exp_string, log_dir, FLAGS.demo_file + '/', save_video=FLAGS.record_gifs)
+            iter_index += 100
+      else:
+          if FLAGS.restore_iter > 0:
+              model_file = model_file[:model_file.index('model')] + 'model_' + str(FLAGS.restore_iter)
+          if model_file:
+              ind1 = model_file.index('model')
+              resume_itr = int(model_file[ind1 + 6:])
+              print("Restoring model weights from " + model_file)
+              # saver = tf.train.Saver()
+              saver.restore(sess, model_file)
+          if 'reach' in FLAGS.experiment:
+              env = gym.make('ReacherMILTest-v1')
+              env.reset()
+              generate_test_demos(data_generator)
+              evaluate_vision_reach(env, graph, data_generator, sess, exp_string, FLAGS.record_gifs, log_dir)
+              # evaluate_rl_vision_reach(graph, data_generator, sess, exp_string, FLAGS.record_gifs, log_dirs)
+          elif 'push' in FLAGS.experiment:
+              evaluate_push(sess, graph, model, data_generator, exp_string, log_dir, FLAGS.demo_file + '/', save_video=FLAGS.record_gifs)
+
+
+    # if FLAGS.resume:
+    #     model_file = tf.train.latest_checkpoint(log_dir)
+    #     if FLAGS.restore_iter > 0:
+    #         model_file = model_file[:model_file.index('model')] + 'model_' + str(FLAGS.restore_iter)
+    #     if model_file:
+    #         ind1 = model_file.index('model')
+    #         resume_itr = int(model_file[ind1+6:])
+    #         print("Restoring model weights from " + model_file)
+    #         with graph.as_default():
+    #             saver.restore(sess, model_file)
+    # if FLAGS.train:
+    #     train(graph, model, saver, sess, data_generator, log_dir, restore_itr=FLAGS.restore_iter)
+    # else:
+    #     if 'reach' in FLAGS.experiment:
+    #         generate_test_demos(data_generator)
+    #         evaluate_vision_reach(env, graph, model, data_generator, sess, exp_string, FLAGS.record_gifs, log_dir)
+    #     elif 'push' in FLAGS.experiment:
+    #         evaluate_push(sess, graph, model, data_generator, exp_string, log_dir, FLAGS.demo_file + '/', save_video=FLAGS.record_gifs)
+    #     else:
+    #         raise NotImplementedError
 
 if __name__ == "__main__":
     main()
